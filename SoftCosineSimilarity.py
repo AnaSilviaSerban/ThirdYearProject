@@ -1,5 +1,4 @@
 from gensim import corpora
-import gensim.downloader as api
 from gensim.models import WordEmbeddingSimilarityIndex
 from gensim.similarities import SparseTermSimilarityMatrix
 from nltk.corpus import stopwords
@@ -8,14 +7,9 @@ from collections import OrderedDict
 from operator import itemgetter
 from allennlp.predictors.predictor import Predictor
 import os
-import sqlite3
 from nltk.stem import WordNetLemmatizer
-
-# connecting to the database
-connection = sqlite3.connect("LegalCorpus.db")
-
-# cursor
-crsr = connection.cursor()
+import textwrap
+import pickle
 
 
 # model = api.load("fasttext-wiki-news-subwords-300")
@@ -23,9 +17,7 @@ crsr = connection.cursor()
 # filename_similarity = 'sparse_model.pkl'
 # index.save(filename_similarity)
 
-
 class SoftCosineSimilarity(object):
-    # TODO try to speed up
     # Lemmatize and tokenize the words (simple_preprocess)
     # Loops through the lists in the document and tokenizes the word
     # while removing stopwords
@@ -51,9 +43,9 @@ class SoftCosineSimilarity(object):
     def get_files_names(self, dir_path):
         return [file_name for file_name in os.listdir(dir_path) if file_name.endswith('.txt')]
 
-    def retrieve_paragraphs(self, file_name, question_input):
+    def retrieve_paragraphs(self, file_name, question_input, similarity_threshold):
         # Reading file names and read them paragraph by paragraph.
-        with open(file_name, "r") as fp:
+        with open(file_name, "r", encoding="utf-8") as fp:
             documents = fp.readlines()
 
         # Append question to the end of the document and pre-process everything all at once.
@@ -80,25 +72,23 @@ class SoftCosineSimilarity(object):
         # similarity_index = WordEmbeddingSimilarityIndex(self.loaded_model)
         similarity_index = WordEmbeddingSimilarityIndex.load('sparse_model.pkl')
         similarity_matrix = SparseTermSimilarityMatrix(similarity_index, dictionary)
+        # pickle.dump(similarity_matrix, open('matrix-file.sav', 'wb'))
+        # file_matrix = open('matrix-file.sav', 'rb')
+        # loaded_similarity = pickle.load(open('matrix-file.sav', 'rb'))
 
         result_matrix = []
         result_dict = OrderedDict()
 
-        for sentence in sentences:
-            result_matrix.append(similarity_matrix.inner_product(sentences[-1], sentence, normalized=True))
-
-        # print(" -- Similarity between document 1 and document 2: -- ")
-        # for sentence in sentences:
-        #     print(rank(sentences[-1], sentence))
-        #     print(sentence)
-        # print(" ------ ")
+        questionInput = sentences[-1]
+        for index in range(len(sentences) - 1):
+            result_matrix.append(similarity_matrix.inner_product(questionInput, sentences[index], normalized=True))
 
         for index, result in enumerate(result_matrix):
             result_dict[index] = result
 
         result_dict = OrderedDict(sorted(result_dict.items(), key=itemgetter(1), reverse=True))
         para_index = [list(result_dict.keys())[1], list(result_dict.keys())[2], list(result_dict.keys())[3],
-                      list(result_dict.keys())[4]]
+                      list(result_dict.keys())[4], list(result_dict.keys())[5]]
 
         print(" -- FILE NAME: ", file_name)
         similarity_value = list(result_dict.values())[1]
@@ -107,49 +97,49 @@ class SoftCosineSimilarity(object):
         for doc in documents:
             if doc != '\n':
                 if count in para_index:
-                    print(" -- This is the paragraph: ", similarity_value)
+                    print(" -- This is the paragraph: ")
                     print(doc)
                     doc_paragraph = doc_paragraph + ' ' + doc
                 count += 1
 
         answer = "There is no answer for this document!"
         print(" -- This is the span of words:")
-        if similarity_value > 0.3:
+        similarity_threshold = 0.3
+        if similarity_value > similarity_threshold:
             predictor = Predictor.from_path(
                 "https://storage.googleapis.com/allennlp-public-models/bidaf-elmo-model-2018.11.30-charpad.tar.gz")
             prediction = predictor.predict(
                 question=question_input,
                 passage=doc_paragraph
             )
-            print(prediction["best_span_str"])
             answer = prediction["best_span_str"]
         else:
-            print(answer)
+            print("\033[44;33m%s!\033[m" % answer)
         print("------------------------")
-        # SQL command to insert the data in the table
-        sql_command = """INSERT INTO law_documents (filename, similarityValue, paragraphExtracted, smallAnswer) 
-        VALUES (?, ?, ?, ?); """
 
-        crsr.execute(sql_command, (file_name, float(similarity_value), doc_paragraph, answer))
+        doc_paragraph = doc_paragraph.rstrip("\n")
+        wrapper = textwrap.TextWrapper(width=190)
 
+        word_list = wrapper.fill(text=doc_paragraph)
+        word_list = word_list.replace(answer, '\033[44;33m{}\033[m'.format(answer))
 
-"""while true"""
+        print(word_list)
+        return word_list
+
 
 softCosineSimilarity = SoftCosineSimilarity()
+print("The default value for the similarity is: ", 0.3)
+print("the artefact will search for the answer in all the documents")
 
 while True:
-    crsr.execute("DELETE FROM law_documents")
+    threshold = input("Please specify what threshold you want to set for the similarity: ")
+    specific_file = input(
+        "Please enter the name of the document that you want to search in. If you want to search in all documents, please say 'all': ")
     question = input("Please ask a question: ")
+
     file_name_list = softCosineSimilarity.get_files_names('/Users/serbana/PycharmProjects/ThirdYearProject')
-    print(file_name_list)
-    for file in file_name_list:
-        softCosineSimilarity.retrieve_paragraphs(file, question)
-
-    crsr.execute("SELECT * FROM law_documents order by similarityValue desc limit 3")
-    ans = crsr.fetchall()
-
-    # loop to print all the data
-    for i in ans:
-        print(i)
-
-    # close the connection
+    if specific_file != 'all':
+        softCosineSimilarity.retrieve_paragraphs(specific_file, question, threshold)
+    else:
+        for file in file_name_list:
+            softCosineSimilarity.retrieve_paragraphs(file, question, threshold)
